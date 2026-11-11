@@ -1,0 +1,56 @@
+name: SDS review reminder
+
+# Monthly: list the SDS that need a check with the supplier in one GitHub issue
+# (GitHub emails the repo owner). On every change to the data: validate it.
+on:
+  schedule:
+    - cron: "23 13 1 * *"   # 1st of each month, 8:23 EST / 9:23 EDT
+  workflow_dispatch:         # "Run workflow" button on the Actions tab
+  push:
+    branches: [main]
+    paths:
+      - "sds-review.csv"
+      - "sds/**"
+      - "scripts/sds_review.py"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: sds-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Validate sds-review.csv
+        run: python3 -I scripts/sds_review.py --check
+
+      - name: Update the reminder issue
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          due=$(python3 -I scripts/sds_review.py --issue-body body.md)
+          title="SDS review: ${due} sheet(s) to check with suppliers"
+          gh label create sds-review --color B60205 --description "Monthly SDS review reminder" --force >/dev/null
+          num=$(gh issue list --label sds-review --state open --json number --jq '.[0].number // empty')
+          if [ "$due" -gt 0 ]; then
+            if [ -n "$num" ]; then
+              gh issue edit "$num" --title "$title" --body-file body.md
+              gh issue comment "$num" --body "Monthly check $(date -u +%Y-%m-%d): ${due} sheet(s) still need a supplier check. The list above is up to date."
+            else
+              gh issue create --title "$title" --label sds-review --body-file body.md
+            fi
+          elif [ -n "$num" ]; then
+            gh issue close "$num" --comment "All safety data sheets are current as of $(date -u +%Y-%m-%d)."
+          fi
